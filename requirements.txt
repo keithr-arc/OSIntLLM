@@ -1,0 +1,38 @@
+# OSIntLLM Requirements
+# Python 3.10+
+
+# Core dependencies
+requests>=2.31.0
+urllib3>=2.0.0
+python-dotenv>=1.0.0
+
+# Google Gemini AI
+google-generativeai>=0.3.0
+
+# OSINT Libraries
+shodan>=1.28.0
+censys>=2.1.0
+dnspython>=2.4.0
+python-whois>=0.8.0
+
+# SSL/TLS Analysis
+pyOpenSSL>=23.2.0
+
+# Data handling
+pydantic>=2.0.0
+
+# Optional: Threat Intelligence
+# virustotal-python>=3.0.0  # Uncomment if using VirusTotal
+# abuseipdb-api>=1.0.0      # Uncomment if using AbuseIPDB
+
+# Optional: Advanced features
+# beautifulsoup4>=4.12.0    # For web scraping
+# selenium>=4.10.0          # For JavaScript-heavy sites
+# nmap>=0.0.1               # For network scanning (requires nmap binary)
+
+# Development dependencies (optional)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.7.0
+flake8>=6.0.0
+mypy>=1.4.0
