@@ -18,6 +18,9 @@ class APIConfig:
     # Google Gemini API
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     
+    # OpenAI/ChatGPT API
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    
     # IPInfo.io API
     IPINFO_API_KEY: str = os.getenv("IPINFO_API_KEY", "")
     
@@ -33,6 +36,12 @@ class APIConfig:
     
     # AbuseIPDB API (Optional - for IP reputation)
     ABUSEIPDB_API_KEY: str = os.getenv("ABUSEIPDB_API_KEY", "")
+    
+    # Project Honeypot API (Optional - for honeypot threat data)
+    PROJECTHONEYPOT_API_KEY: str = os.getenv("PROJECTHONEYPOT_API_KEY", "")
+    
+    # GreyNoise API (Optional - for IP threat intelligence)
+    GREYNOISE_API_KEY: str = os.getenv("GREYNOISE_API_KEY", "")
     
     # SSL Labs API (Optional - for certificate analysis)
     # Note: SSL Labs API is free and doesn't require authentication

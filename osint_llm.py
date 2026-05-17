@@ -1,6 +1,6 @@
 """
 OSIntLLM - Open Source Intelligence with Large Language Models
-Integrates Google Gemini, IPInfo, Shodan, Censys, and other OSINT sources
+Integrates Google Gemini, OpenAI, IPInfo, Shodan, Censys, NMap, and other OSINT sources
 Python 3.10+
 """
 
@@ -25,6 +25,7 @@ from ipaddress import ip_address, AddressValueError
 
 # Local imports
 from config import APIConfig, validate_config
+from nmap_integration import NMapScanner, NMapResult
 
 warnings.filterwarnings('ignore', message='Unverified HTTPS request')
 
@@ -44,6 +45,7 @@ class OSIntResult:
     ports_open: List[int] = None
     vulnerabilities: List[Dict[str, Any]] = None
     threat_intelligence: Dict[str, Any] = None
+    nmap_results: NMapResult = None
     llm_analysis: str = None
     summary: str = None
 
@@ -60,7 +62,10 @@ class OSIntLLM:
         self.config = config or APIConfig()
         self.session = self._create_session()
         self.gemini_model = None
+        self.openai_client = None
+        self.nmap_scanner = NMapScanner()
         self._init_gemini()
+        self._init_openai()
     
     def _create_session(self) -> requests.Session:
         """Create requests session with retry strategy"""
@@ -87,6 +92,19 @@ class OSIntLLM:
             print("✓ Gemini API initialized successfully")
         except Exception as e:
             print(f"Error initializing Gemini: {e}")
+    
+    def _init_openai(self) -> None:
+        """Initialize OpenAI API"""
+        if not self.config.OPENAI_API_KEY:
+            print("Warning: OpenAI API key not configured")
+            return
+        
+        try:
+            from openai import OpenAI
+            self.openai_client = OpenAI(api_key=self.config.OPENAI_API_KEY)
+            print("✓ OpenAI API initialized successfully")
+        except Exception as e:
+            print(f"Error initializing OpenAI: {e}")
     
     def _normalize_target(self, target: str) -> Tuple[str, str]:
         """
@@ -300,7 +318,7 @@ class OSIntLLM:
             return {}
     
     def get_threat_intelligence(self, target: str) -> Dict[str, Any]:
-        """Get threat intelligence from VirusTotal and AbuseIPDB"""
+        """Get threat intelligence from multiple sources"""
         threat_data = {}
         
         # VirusTotal
@@ -310,6 +328,14 @@ class OSIntLLM:
         # AbuseIPDB
         if self.config.ABUSEIPDB_API_KEY:
             threat_data["abuseipdb"] = self._query_abuseipdb(target)
+        
+        # Project Honeypot
+        if self.config.PROJECTHONEYPOT_API_KEY:
+            threat_data["projecthoneypot"] = self._query_projecthoneypot(target)
+        
+        # GreyNoise
+        if self.config.GREYNOISE_API_KEY:
+            threat_data["greynoise"] = self._query_greynoise(target)
         
         return threat_data
     
@@ -345,6 +371,46 @@ class OSIntLLM:
             print(f"Error querying AbuseIPDB: {e}")
             return {}
     
+    def _query_projecthoneypot(self, ip: str) -> Dict[str, Any]:
+        """Query Project Honeypot API"""
+        try:
+            url = f"https://www.projecthoneypot.org/api/v1/{self.config.PROJECTHONEYPOT_API_KEY}/ip/{ip}"
+            response = self.session.get(url, timeout=self.config.TIMEOUT)
+            response.raise_for_status()
+            
+            data = response.json()
+            print(f"✓ Project Honeypot data retrieved for {ip}")
+            return {
+                "threat_level": data.get("threat_level"),
+                "threat_type": data.get("threat_type"),
+                "last_seen": data.get("last_seen"),
+                "activity": data.get("activity")
+            }
+        except Exception as e:
+            print(f"Error querying Project Honeypot: {e}")
+            return {}
+    
+    def _query_greynoise(self, ip: str) -> Dict[str, Any]:
+        """Query GreyNoise API"""
+        try:
+            url = f"https://api.greynoise.io/v3/community/{ip}"
+            headers = {"key": self.config.GREYNOISE_API_KEY}
+            response = self.session.get(url, headers=headers, timeout=self.config.TIMEOUT)
+            response.raise_for_status()
+            
+            data = response.json()
+            print(f"✓ GreyNoise data retrieved for {ip}")
+            return {
+                "classification": data.get("classification"),
+                "last_seen": data.get("last_seen"),
+                "seen": data.get("seen"),
+                "tags": data.get("tags", []),
+                "actions": data.get("actions", [])
+            }
+        except Exception as e:
+            print(f"Error querying GreyNoise: {e}")
+            return {}
+    
     def analyze_with_gemini(self, osint_data: Dict[str, Any]) -> str:
         """Analyze OSINT data with Google Gemini"""
         if not self.gemini_model:
@@ -373,7 +439,62 @@ Provide a detailed, professional analysis in markdown format.
             print(f"Error analyzing with Gemini: {e}")
             return ""
     
-    def scan(self, target: str) -> OSIntResult:
+    def analyze_with_openai(self, osint_data: Dict[str, Any]) -> str:
+        """Analyze OSINT data with OpenAI ChatGPT"""
+        if not self.openai_client:
+            print("Warning: OpenAI not initialized")
+            return ""
+        
+        try:
+            prompt = f"""
+You are a cybersecurity expert analyzing Open Source Intelligence (OSINT) data.
+Please analyze the following OSINT data and provide:
+1. Summary of findings
+2. Security concerns and vulnerabilities identified
+3. Risk assessment
+4. Recommendations for remediation
+5. Additional areas to investigate
+
+OSINT Data:
+{json.dumps(osint_data, indent=2, default=str)}
+
+Provide a detailed, professional analysis in markdown format.
+"""
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a cybersecurity expert analyzing OSINT data."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=2000
+            )
+            print("✓ OpenAI analysis completed")
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Error analyzing with OpenAI: {e}")
+            return ""
+    
+    def perform_nmap_scan(self, target: str, profile: str = "quick", custom_args: str = None) -> NMapResult:
+        """
+        Perform NMap scan on target
+        
+        Args:
+            target: IP address or FQDN to scan
+            profile: Preset profile ('quick', 'comprehensive', 'vulnerability', 'aggressive')
+            custom_args: Custom NMap arguments to override profile
+        
+        Returns:
+            NMapResult object with scan results
+        """
+        try:
+            result = self.nmap_scanner.scan(target, profile, custom_args)
+            return result
+        except Exception as e:
+            print(f"Error performing NMap scan: {e}")
+            return None
+    
+    def scan(self, target: str, run_nmap: bool = False, nmap_profile: str = "quick") -> OSIntResult:
         """
         Perform comprehensive OSINT scan on target
         Target can be: IP address, FQDN, domain, or URL
@@ -402,43 +523,50 @@ Provide a detailed, professional analysis in markdown format.
                 ip = None
         
         # Gather OSINT data
-        print("\n[1/7] Fetching IPInfo data...")
+        print("\n[1/8] Fetching IPInfo data...")
         if ip:
             result.ipinfo_data = self.get_ipinfo(ip)
             time.sleep(self.config.REQUEST_DELAY)
         
-        print("[2/7] Fetching Shodan data...")
+        print("[2/8] Fetching Shodan data...")
         if ip:
             result.shodan_data = self.get_shodan_data(ip)
             result.ports_open = result.shodan_data.get("ports", [])
             time.sleep(self.config.REQUEST_DELAY)
         
-        print("[3/7] Fetching Censys data...")
+        print("[3/8] Fetching Censys data...")
         if ip:
             result.censys_data = self.get_censys_info(ip)
             time.sleep(self.config.REQUEST_DELAY)
         
-        print("[4/7] Fetching SSL certificate...")
+        print("[4/8] Fetching SSL certificate...")
         if target_type in ["fqdn", "url"]:
             result.ssl_certificate = self.get_ssl_certificate(normalized_target)
             time.sleep(self.config.REQUEST_DELAY)
         
-        print("[5/7] Fetching DNS records...")
+        print("[5/8] Fetching DNS records...")
         if target_type in ["fqdn", "url"]:
             result.dns_records = self.get_dns_records(normalized_target)
             time.sleep(self.config.REQUEST_DELAY)
         
-        print("[6/7] Fetching WHOIS data...")
+        print("[6/8] Fetching WHOIS data...")
         result.whois_data = self.get_whois_info(normalized_target)
         time.sleep(self.config.REQUEST_DELAY)
         
-        print("[7/7] Fetching threat intelligence...")
+        print("[7/8] Fetching threat intelligence...")
         if ip:
             result.threat_intelligence = self.get_threat_intelligence(ip)
             time.sleep(self.config.REQUEST_DELAY)
         
-        # Analyze with Gemini
-        print("\n[LLM] Analyzing findings with Google Gemini...")
+        # NMap scan (optional)
+        if run_nmap:
+            print("[8/8] Performing NMap scan...")
+            if ip:
+                result.nmap_results = self.perform_nmap_scan(ip, nmap_profile)
+                time.sleep(self.config.REQUEST_DELAY)
+        
+        # Analyze with LLM
+        print("\n[LLM] Analyzing findings with LLMs...")
         osint_summary = {
             "ipinfo": result.ipinfo_data,
             "shodan": result.shodan_data,
@@ -447,8 +575,14 @@ Provide a detailed, professional analysis in markdown format.
             "dns_records": result.dns_records,
             "whois": result.whois_data,
             "threat_intelligence": result.threat_intelligence,
+            "nmap": asdict(result.nmap_results) if result.nmap_results else None,
         }
-        result.llm_analysis = self.analyze_with_gemini(osint_summary)
+        
+        # Try OpenAI first, fall back to Gemini
+        if self.openai_client:
+            result.llm_analysis = self.analyze_with_openai(osint_summary)
+        else:
+            result.llm_analysis = self.analyze_with_gemini(osint_summary)
         
         # Generate summary
         result.summary = self._generate_summary(result)
@@ -461,6 +595,10 @@ Provide a detailed, professional analysis in markdown format.
     
     def _generate_summary(self, result: OSIntResult) -> str:
         """Generate a text summary of results"""
+        nmap_info = ""
+        if result.nmap_results:
+            nmap_info = f"\n- NMap Scan: {result.nmap_results.hosts_up} hosts up, {len(result.nmap_results.open_ports)} open ports"
+        
         summary = f"""
 OSINT Scan Summary
 ==================
@@ -472,7 +610,7 @@ Key Findings:
 - Open Ports: {result.ports_open if result.ports_open else 'None detected'}
 - SSL Certificate: {'Valid' if result.ssl_certificate else 'Not found'}
 - DNS Records: {len(result.dns_records) if result.dns_records else 0} records
-- Threat Indicators: {'Found' if result.threat_intelligence else 'None'}
+- Threat Indicators: {'Found' if result.threat_intelligence else 'None'}{nmap_info}
 
 For detailed analysis, see LLM analysis section.
 """
@@ -504,6 +642,13 @@ For detailed analysis, see LLM analysis section.
     
     def _format_markdown(self, result: OSIntResult) -> str:
         """Format results as markdown"""
+        nmap_section = ""
+        if result.nmap_results:
+            nmap_section = f"""
+## NMap Results
+{self.nmap_scanner.format_results(result.nmap_results)}
+"""
+        
         md = f"""# OSINT Scan Report
 
 ## Target Information
@@ -532,6 +677,8 @@ For detailed analysis, see LLM analysis section.
 ## Threat Intelligence
 {self._dict_to_md(result.threat_intelligence) if result.threat_intelligence else 'No data'}
 
+{nmap_section}
+
 ## LLM Analysis
 {result.llm_analysis if result.llm_analysis else 'No analysis available'}
 
@@ -558,6 +705,20 @@ For detailed analysis, see LLM analysis section.
         return md
 
 
+def display_menu() -> str:
+    """Display main menu and get user choice"""
+    print("\n" + "="*60)
+    print("OSIntLLM - Open Source Intelligence with LLM Analysis")
+    print("="*60)
+    print("\n1. Standard OSINT Scan")
+    print("2. OSINT Scan + NMap")
+    print("3. View NMap Profiles")
+    print("4. View NMap Switches")
+    print("5. Exit")
+    print("="*60)
+    return input("\nSelect option (1-5): ").strip()
+
+
 def main():
     """Main function"""
     print("OSIntLLM - Open Source Intelligence with LLM Analysis")
@@ -572,49 +733,97 @@ def main():
     config = APIConfig()
     osint_llm = OSIntLLM(config)
     
-    # Example usage
-    targets = [
-        # "8.8.8.8",  # Google DNS
-        # "google.com",
-        # "https://example.com",
-    ]
-    
-    # Interactive mode
-    print("\nEnter targets to scan (one per line, empty line to finish):")
-    print("Examples: 8.8.8.8, google.com, https://example.com\n")
-    
     while True:
-        target = input("Target: ").strip()
-        if not target:
+        choice = display_menu()
+        
+        if choice == "5":
+            print("Exiting...")
             break
-        targets.append(target)
-    
-    if not targets:
-        print("No targets provided. Exiting.")
-        return
-    
-    # Scan targets
-    results = []
-    for target in targets:
-        try:
-            result = osint_llm.scan(target)
-            results.append(result)
+        
+        elif choice == "3":
+            # Display NMap profiles
+            print("\nAvailable NMap Profiles:")
+            print("="*60)
+            profiles = osint_llm.nmap_scanner.get_available_profiles()
+            for profile_key, profile_info in profiles.items():
+                print(f"\n{profile_key.upper()}:")
+                print(f"  Name: {profile_info['name']}")
+                print(f"  Description: {profile_info['description']}")
+                print(f"  Estimated Time: {profile_info['time_estimate']}")
+        
+        elif choice == "4":
+            # Display NMap switches
+            print("\nAvailable NMap Switches:")
+            print("="*60)
+            switches = osint_llm.nmap_scanner.get_nmap_switches()
+            for switch, description in switches.items():
+                print(f"{switch:25s} - {description}")
+        
+        elif choice == "1" or choice == "2":
+            # Get target
+            print("\nEnter targets to scan (one per line, empty line to finish):")
+            print("Examples: 8.8.8.8, google.com, https://example.com\n")
             
-            # Print summary
-            print(f"\n{result.summary}")
+            targets = []
+            while True:
+                target = input("Target: ").strip()
+                if not target:
+                    break
+                targets.append(target)
             
-            # Export results
-            osint_llm.export_results(result, format="json")
-            osint_llm.export_results(result, format="markdown")
+            if not targets:
+                print("No targets provided. Returning to menu.")
+                continue
             
-        except Exception as e:
-            print(f"Error scanning {target}: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    print("\n" + "=" * 60)
-    print(f"Scan completed for {len(results)} target(s)")
-    print("=" * 60)
+            # Get NMap options if choice is 2
+            run_nmap = (choice == "2")
+            nmap_profile = "quick"
+            custom_nmap_args = None
+            
+            if run_nmap:
+                print("\nNMap Scanning Options:")
+                print("1. Quick Scan (default)")
+                print("2. Comprehensive Scan")
+                print("3. Vulnerability Scan")
+                print("4. Aggressive Scan")
+                print("5. Custom Arguments")
+                nmap_choice = input("\nSelect NMap profile (1-5, default=1): ").strip()
+                
+                if nmap_choice == "2":
+                    nmap_profile = "comprehensive"
+                elif nmap_choice == "3":
+                    nmap_profile = "vulnerability"
+                elif nmap_choice == "4":
+                    nmap_profile = "aggressive"
+                elif nmap_choice == "5":
+                    custom_nmap_args = input("Enter custom NMap arguments: ").strip()
+                
+                if not osint_llm.nmap_scanner.nmap_available:
+                    print("Warning: NMap is not installed. Proceeding with standard OSINT scan only.")
+                    run_nmap = False
+            
+            # Scan targets
+            results = []
+            for target in targets:
+                try:
+                    result = osint_llm.scan(target, run_nmap=run_nmap, nmap_profile=nmap_profile)
+                    results.append(result)
+                    
+                    # Print summary
+                    print(f"\n{result.summary}")
+                    
+                    # Export results
+                    osint_llm.export_results(result, format="json")
+                    osint_llm.export_results(result, format="markdown")
+                    
+                except Exception as e:
+                    print(f"Error scanning {target}: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            print("\n" + "=" * 60)
+            print(f"Scan completed for {len(results)} target(s)")
+            print("=" * 60)
 
 
 if __name__ == "__main__":
