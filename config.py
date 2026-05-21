@@ -15,15 +15,6 @@ load_dotenv()
 class APIConfig:
     """API configuration and credentials"""
     
-    # Google Gemini API
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    
-    # OpenAI/ChatGPT API
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    
-    # IPInfo.io API
-    IPINFO_API_KEY: str = os.getenv("IPINFO_API_KEY", "")
-    
     # Shodan API
     SHODAN_API_KEY: str = os.getenv("SHODAN_API_KEY", "")
     
@@ -31,22 +22,11 @@ class APIConfig:
     CENSYS_API_ID: str = os.getenv("CENSYS_API_ID", "")
     CENSYS_API_SECRET: str = os.getenv("CENSYS_API_SECRET", "")
     
-    # VirusTotal API (Optional - for malware/threat intelligence)
-    VIRUSTOTAL_API_KEY: str = os.getenv("VIRUSTOTAL_API_KEY", "")
-    
-    # AbuseIPDB API (Optional - for IP reputation)
-    ABUSEIPDB_API_KEY: str = os.getenv("ABUSEIPDB_API_KEY", "")
-    
-    # Project Honeypot API (Optional - for honeypot threat data)
-    PROJECTHONEYPOT_API_KEY: str = os.getenv("PROJECTHONEYPOT_API_KEY", "")
-    
-    # GreyNoise API (Optional - for IP threat intelligence)
+    # GreyNoise API
     GREYNOISE_API_KEY: str = os.getenv("GREYNOISE_API_KEY", "")
     
-    # SSL Labs API (Optional - for certificate analysis)
-    # Note: SSL Labs API is free and doesn't require authentication
-    
-    # WHOIS lookup (free, no API key needed)
+    # AbuseIPDB API
+    ABUSEIPDB_API_KEY: str = os.getenv("ABUSEIPDB_API_KEY", "")
     
     # Common settings
     TIMEOUT: int = 30
@@ -58,11 +38,11 @@ def validate_config() -> bool:
     """Validate that required API keys are present"""
     config = APIConfig()
     required_keys = [
-        "GEMINI_API_KEY",
-        "IPINFO_API_KEY",
         "SHODAN_API_KEY",
         "CENSYS_API_ID",
         "CENSYS_API_SECRET",
+        "GREYNOISE_API_KEY",
+        "ABUSEIPDB_API_KEY",
     ]
     
     missing_keys = []
