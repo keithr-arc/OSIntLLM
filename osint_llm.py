@@ -1,6 +1,6 @@
 """
 OSIntLLM - Open Source Intelligence with Large Language Models
-Integrates Google Gemini, OpenAI, IPInfo, Shodan, Censys, NMap, and other OSINT sources
+Integrates Shodan, Censys, GreyNoise, AbuseIPDB, and NMap for IP intelligence
 Python 3.10+
 """
 
@@ -20,7 +20,6 @@ import warnings
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import google.generativeai as genai
 from ipaddress import ip_address, AddressValueError
 
 # Local imports
@@ -36,17 +35,12 @@ class OSIntResult:
     target: str
     target_type: str  # 'ip', 'domain', 'fqdn', 'url'
     timestamp: str
-    ipinfo_data: Dict[str, Any] = None
     shodan_data: Dict[str, Any] = None
     censys_data: Dict[str, Any] = None
-    ssl_certificate: Dict[str, Any] = None
-    whois_data: Dict[str, Any] = None
-    dns_records: Dict[str, Any] = None
+    greynoise_data: Dict[str, Any] = None
+    abuseipdb_data: Dict[str, Any] = None
     ports_open: List[int] = None
-    vulnerabilities: List[Dict[str, Any]] = None
-    threat_intelligence: Dict[str, Any] = None
     nmap_results: NMapResult = None
-    llm_analysis: str = None
     summary: str = None
 
     def to_json(self) -> str:
@@ -55,17 +49,13 @@ class OSIntResult:
 
 
 class OSIntLLM:
-    """Main OSINT and LLM integration class"""
+    """Main OSINT integration class for IP intelligence scanning"""
     
     def __init__(self, config: APIConfig = None):
         """Initialize OSIntLLM with API configuration"""
         self.config = config or APIConfig()
         self.session = self._create_session()
-        self.gemini_model = None
-        self.openai_client = None
         self.nmap_scanner = NMapScanner()
-        self._init_gemini()
-        self._init_openai()
     
     def _create_session(self) -> requests.Session:
         """Create requests session with retry strategy"""
@@ -79,32 +69,6 @@ class OSIntLLM:
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         return session
-    
-    def _init_gemini(self) -> None:
-        """Initialize Google Gemini API"""
-        if not self.config.GEMINI_API_KEY:
-            print("Warning: Gemini API key not configured")
-            return
-        
-        try:
-            genai.configure(api_key=self.config.GEMINI_API_KEY)
-            self.gemini_model = genai.GenerativeModel('gemini-pro')
-            print("✓ Gemini API initialized successfully")
-        except Exception as e:
-            print(f"Error initializing Gemini: {e}")
-    
-    def _init_openai(self) -> None:
-        """Initialize OpenAI API"""
-        if not self.config.OPENAI_API_KEY:
-            print("Warning: OpenAI API key not configured")
-            return
-        
-        try:
-            from openai import OpenAI
-            self.openai_client = OpenAI(api_key=self.config.OPENAI_API_KEY)
-            print("✓ OpenAI API initialized successfully")
-        except Exception as e:
-            print(f"Error initializing OpenAI: {e}")
     
     def _normalize_target(self, target: str) -> Tuple[str, str]:
         """
@@ -131,53 +95,13 @@ class OSIntLLM:
         
         return target, "unknown"
     
-    def get_ipinfo(self, ip: str) -> Dict[str, Any]:
-        """Get IP information from IPInfo.io"""
-        if not self.config.IPINFO_API_KEY:
-            print("Warning: IPInfo API key not configured")
-            return {}
-        
-        try:
-            url = f"https://ipapi.co/{ip}/json/"
-            response = self.session.get(url, timeout=self.config.TIMEOUT)
-            response.raise_for_status()
-            
-            data = response.json()
-            print(f"✓ IPInfo data retrieved for {ip}")
-            return {
-                "ip": data.get("ip"),
-                "organization": data.get("org"),
-                "isp": data.get("org_name"),
-                "country": data.get("country_name"),
-                "region": data.get("region"),
-                "city": data.get("city"),
-                "latitude": data.get("latitude"),
-                "longitude": data.get("longitude"),
-                "asn": data.get("asn"),
-                "timezone": data.get("timezone"),
-            }
-        except Exception as e:
-            print(f"Error fetching IPInfo data: {e}")
-            return {}
-    
-    def get_shodan_info(self, target: str) -> Dict[str, Any]:
-        """Get Shodan information for IP or hostname"""
+    def get_shodan_info(self, ip: str) -> Dict[str, Any]:
+        """Get Shodan information for IP"""
         if not self.config.SHODAN_API_KEY:
             print("Warning: Shodan API key not configured")
             return {}
         
         try:
-            # First, get IP address if target is hostname
-            ip = target
-            target_type = self._normalize_target(target)[1]
-            
-            if target_type != "ip":
-                try:
-                    ip = socket.gethostbyname(target)
-                except socket.gaierror:
-                    print(f"Could not resolve {target} to IP address")
-                    return {}
-            
             url = f"https://api.shodan.io/shodan/host/{ip}"
             params = {"key": self.config.SHODAN_API_KEY}
             response = self.session.get(url, params=params, timeout=self.config.TIMEOUT)
@@ -239,159 +163,12 @@ class OSIntLLM:
             print(f"Error fetching Censys data: {e}")
             return {}
     
-    def get_ssl_certificate(self, hostname: str, port: int = 443) -> Dict[str, Any]:
-        """Get SSL certificate information"""
-        try:
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            
-            with socket.create_connection((hostname, port), timeout=self.config.TIMEOUT) as sock:
-                with context.wrap_socket(sock, server_hostname=hostname) as ssock:
-                    cert = ssock.getpeercert()
-                    print(f"✓ SSL certificate retrieved for {hostname}")
-                    
-                    return {
-                        "subject": dict(x[0] for x in cert.get("subject", [])),
-                        "issuer": dict(x[0] for x in cert.get("issuer", [])),
-                        "version": cert.get("version"),
-                        "serial_number": cert.get("serialNumber"),
-                        "not_before": cert.get("notBefore"),
-                        "not_after": cert.get("notAfter"),
-                        "subjectAltName": [x[1] for x in cert.get("subjectAltName", [])],
-                    }
-        except Exception as e:
-            print(f"Error retrieving SSL certificate: {e}")
+    def get_greynoise_info(self, ip: str) -> Dict[str, Any]:
+        """Get GreyNoise information for IP"""
+        if not self.config.GREYNOISE_API_KEY:
+            print("Warning: GreyNoise API key not configured")
             return {}
-    
-    def get_dns_records(self, hostname: str) -> Dict[str, Any]:
-        """Get DNS records for hostname"""
-        try:
-            import dns.resolver
-            
-            records = {
-                "A": [],
-                "AAAA": [],
-                "MX": [],
-                "NS": [],
-                "TXT": [],
-                "CNAME": [],
-            }
-            
-            for record_type in records.keys():
-                try:
-                    answers = dns.resolver.resolve(hostname, record_type)
-                    records[record_type] = [str(rdata) for rdata in answers]
-                except Exception:
-                    pass
-            
-            print(f"✓ DNS records retrieved for {hostname}")
-            return records
-        except ImportError:
-            print("Warning: dnspython not installed. Skipping DNS lookups")
-            return {}
-        except Exception as e:
-            print(f"Error retrieving DNS records: {e}")
-            return {}
-    
-    def get_whois_info(self, target: str) -> Dict[str, Any]:
-        """Get WHOIS information"""
-        try:
-            import whois
-            
-            whois_data = whois.whois(target)
-            print(f"✓ WHOIS data retrieved for {target}")
-            
-            return {
-                "registrar": str(whois_data.registrar) if whois_data.registrar else None,
-                "creation_date": str(whois_data.creation_date) if whois_data.creation_date else None,
-                "expiration_date": str(whois_data.expiration_date) if whois_data.expiration_date else None,
-                "updated_date": str(whois_data.updated_date) if whois_data.updated_date else None,
-                "name_servers": whois_data.name_servers if whois_data.name_servers else [],
-                "registrant_name": str(whois_data.registrant_name) if hasattr(whois_data, 'registrant_name') else None,
-            }
-        except ImportError:
-            print("Warning: whois not installed. Skipping WHOIS lookups")
-            return {}
-        except Exception as e:
-            print(f"Error retrieving WHOIS data: {e}")
-            return {}
-    
-    def get_threat_intelligence(self, target: str) -> Dict[str, Any]:
-        """Get threat intelligence from multiple sources"""
-        threat_data = {}
         
-        # VirusTotal
-        if self.config.VIRUSTOTAL_API_KEY:
-            threat_data["virustotal"] = self._query_virustotal(target)
-        
-        # AbuseIPDB
-        if self.config.ABUSEIPDB_API_KEY:
-            threat_data["abuseipdb"] = self._query_abuseipdb(target)
-        
-        # Project Honeypot
-        if self.config.PROJECTHONEYPOT_API_KEY:
-            threat_data["projecthoneypot"] = self._query_projecthoneypot(target)
-        
-        # GreyNoise
-        if self.config.GREYNOISE_API_KEY:
-            threat_data["greynoise"] = self._query_greynoise(target)
-        
-        return threat_data
-    
-    def _query_virustotal(self, target: str) -> Dict[str, Any]:
-        """Query VirusTotal API"""
-        try:
-            url = "https://www.virustotal.com/api/v3/search"
-            headers = {"x-apikey": self.config.VIRUSTOTAL_API_KEY}
-            params = {"query": target}
-            response = self.session.get(url, headers=headers, params=params, timeout=self.config.TIMEOUT)
-            response.raise_for_status()
-            
-            data = response.json()
-            print(f"✓ VirusTotal data retrieved for {target}")
-            return data.get("data", {})
-        except Exception as e:
-            print(f"Error querying VirusTotal: {e}")
-            return {}
-    
-    def _query_abuseipdb(self, ip: str) -> Dict[str, Any]:
-        """Query AbuseIPDB API"""
-        try:
-            url = "https://api.abuseipdb.com/api/v2/check"
-            headers = {"Key": self.config.ABUSEIPDB_API_KEY, "Accept": "application/json"}
-            params = {"ipAddress": ip, "maxAgeInDays": 90, "verbose": ""}
-            response = self.session.get(url, headers=headers, params=params, timeout=self.config.TIMEOUT)
-            response.raise_for_status()
-            
-            data = response.json()
-            print(f"✓ AbuseIPDB data retrieved for {ip}")
-            return data.get("data", {})
-        except Exception as e:
-            print(f"Error querying AbuseIPDB: {e}")
-            return {}
-    
-    def _query_projecthoneypot(self, ip: str) -> Dict[str, Any]:
-        """Query Project Honeypot API"""
-        try:
-            url = f"https://www.projecthoneypot.org/api/v1/{self.config.PROJECTHONEYPOT_API_KEY}/ip/{ip}"
-            response = self.session.get(url, timeout=self.config.TIMEOUT)
-            response.raise_for_status()
-            
-            data = response.json()
-            print(f"✓ Project Honeypot data retrieved for {ip}")
-            return {
-                "threat_level": data.get("threat_level"),
-                "threat_type": data.get("threat_type"),
-                "last_seen": data.get("last_seen"),
-                "activity": data.get("activity")
-            }
-        except Exception as e:
-            print(f"Error querying Project Honeypot: {e}")
-            return {}
-    
-    def _query_greynoise(self, ip: str) -> Dict[str, Any]:
-        """Query GreyNoise API"""
         try:
             url = f"https://api.greynoise.io/v3/community/{ip}"
             headers = {"key": self.config.GREYNOISE_API_KEY}
@@ -411,69 +188,25 @@ class OSIntLLM:
             print(f"Error querying GreyNoise: {e}")
             return {}
     
-    def analyze_with_gemini(self, osint_data: Dict[str, Any]) -> str:
-        """Analyze OSINT data with Google Gemini"""
-        if not self.gemini_model:
-            print("Warning: Gemini not initialized")
-            return ""
+    def get_abuseipdb_info(self, ip: str) -> Dict[str, Any]:
+        """Query AbuseIPDB API"""
+        if not self.config.ABUSEIPDB_API_KEY:
+            print("Warning: AbuseIPDB API key not configured")
+            return {}
         
         try:
-            prompt = f"""
-You are a cybersecurity expert analyzing Open Source Intelligence (OSINT) data.
-Please analyze the following OSINT data and provide:
-1. Summary of findings
-2. Security concerns and vulnerabilities identified
-3. Risk assessment
-4. Recommendations for remediation
-5. Additional areas to investigate
-
-OSINT Data:
-{json.dumps(osint_data, indent=2, default=str)}
-
-Provide a detailed, professional analysis in markdown format.
-"""
-            response = self.gemini_model.generate_content(prompt)
-            print("✓ Gemini analysis completed")
-            return response.text
+            url = "https://api.abuseipdb.com/api/v2/check"
+            headers = {"Key": self.config.ABUSEIPDB_API_KEY, "Accept": "application/json"}
+            params = {"ipAddress": ip, "maxAgeInDays": 90, "verbose": ""}
+            response = self.session.get(url, headers=headers, params=params, timeout=self.config.TIMEOUT)
+            response.raise_for_status()
+            
+            data = response.json()
+            print(f"✓ AbuseIPDB data retrieved for {ip}")
+            return data.get("data", {})
         except Exception as e:
-            print(f"Error analyzing with Gemini: {e}")
-            return ""
-    
-    def analyze_with_openai(self, osint_data: Dict[str, Any]) -> str:
-        """Analyze OSINT data with OpenAI ChatGPT"""
-        if not self.openai_client:
-            print("Warning: OpenAI not initialized")
-            return ""
-        
-        try:
-            prompt = f"""
-You are a cybersecurity expert analyzing Open Source Intelligence (OSINT) data.
-Please analyze the following OSINT data and provide:
-1. Summary of findings
-2. Security concerns and vulnerabilities identified
-3. Risk assessment
-4. Recommendations for remediation
-5. Additional areas to investigate
-
-OSINT Data:
-{json.dumps(osint_data, indent=2, default=str)}
-
-Provide a detailed, professional analysis in markdown format.
-"""
-            response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a cybersecurity expert analyzing OSINT data."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=2000
-            )
-            print("✓ OpenAI analysis completed")
-            return response.choices[0].message.content
-        except Exception as e:
-            print(f"Error analyzing with OpenAI: {e}")
-            return ""
+            print(f"Error querying AbuseIPDB: {e}")
+            return {}
     
     def perform_nmap_scan(self, target: str, profile: str = "quick", custom_args: str = None) -> NMapResult:
         """
@@ -496,7 +229,7 @@ Provide a detailed, professional analysis in markdown format.
     
     def scan(self, target: str, run_nmap: bool = False, nmap_profile: str = "quick") -> OSIntResult:
         """
-        Perform comprehensive OSINT scan on target
+        Perform comprehensive OSINT scan on target IP address
         Target can be: IP address, FQDN, domain, or URL
         """
         normalized_target, target_type = self._normalize_target(target)
@@ -523,75 +256,38 @@ Provide a detailed, professional analysis in markdown format.
                 ip = None
         
         # Gather OSINT data
-        print("\n[1/8] Fetching IPInfo data...")
+        print("\n[1/4] Fetching Shodan data...")
         if ip:
-            result.ipinfo_data = self.get_ipinfo(ip)
-            time.sleep(self.config.REQUEST_DELAY)
-        
-        print("[2/8] Fetching Shodan data...")
-        if ip:
-            result.shodan_data = self.get_shodan_data(ip)
+            result.shodan_data = self.get_shodan_info(ip)
             result.ports_open = result.shodan_data.get("ports", [])
             time.sleep(self.config.REQUEST_DELAY)
         
-        print("[3/8] Fetching Censys data...")
+        print("[2/4] Fetching Censys data...")
         if ip:
             result.censys_data = self.get_censys_info(ip)
             time.sleep(self.config.REQUEST_DELAY)
         
-        print("[4/8] Fetching SSL certificate...")
-        if target_type in ["fqdn", "url"]:
-            result.ssl_certificate = self.get_ssl_certificate(normalized_target)
-            time.sleep(self.config.REQUEST_DELAY)
-        
-        print("[5/8] Fetching DNS records...")
-        if target_type in ["fqdn", "url"]:
-            result.dns_records = self.get_dns_records(normalized_target)
-            time.sleep(self.config.REQUEST_DELAY)
-        
-        print("[6/8] Fetching WHOIS data...")
-        result.whois_data = self.get_whois_info(normalized_target)
-        time.sleep(self.config.REQUEST_DELAY)
-        
-        print("[7/8] Fetching threat intelligence...")
+        print("[3/4] Fetching GreyNoise data...")
         if ip:
-            result.threat_intelligence = self.get_threat_intelligence(ip)
+            result.greynoise_data = self.get_greynoise_info(ip)
+            time.sleep(self.config.REQUEST_DELAY)
+        
+        print("[4/4] Fetching AbuseIPDB data...")
+        if ip:
+            result.abuseipdb_data = self.get_abuseipdb_info(ip)
             time.sleep(self.config.REQUEST_DELAY)
         
         # NMap scan (optional)
         if run_nmap:
-            print("[8/8] Performing NMap scan...")
+            print("\n[NMap] Performing NMap scan...")
             if ip:
                 result.nmap_results = self.perform_nmap_scan(ip, nmap_profile)
                 time.sleep(self.config.REQUEST_DELAY)
-        
-        # Analyze with LLM
-        print("\n[LLM] Analyzing findings with LLMs...")
-        osint_summary = {
-            "ipinfo": result.ipinfo_data,
-            "shodan": result.shodan_data,
-            "censys": result.censys_data,
-            "ssl_certificate": result.ssl_certificate,
-            "dns_records": result.dns_records,
-            "whois": result.whois_data,
-            "threat_intelligence": result.threat_intelligence,
-            "nmap": asdict(result.nmap_results) if result.nmap_results else None,
-        }
-        
-        # Try OpenAI first, fall back to Gemini
-        if self.openai_client:
-            result.llm_analysis = self.analyze_with_openai(osint_summary)
-        else:
-            result.llm_analysis = self.analyze_with_gemini(osint_summary)
         
         # Generate summary
         result.summary = self._generate_summary(result)
         
         return result
-    
-    def get_shodan_data(self, ip: str) -> Dict[str, Any]:
-        """Wrapper for get_shodan_info for consistency"""
-        return self.get_shodan_info(ip)
     
     def _generate_summary(self, result: OSIntResult) -> str:
         """Generate a text summary of results"""
@@ -600,19 +296,18 @@ Provide a detailed, professional analysis in markdown format.
             nmap_info = f"\n- NMap Scan: {result.nmap_results.hosts_up} hosts up, {len(result.nmap_results.open_ports)} open ports"
         
         summary = f"""
-OSINT Scan Summary
-==================
+IP Intelligence Scan Summary
+=============================
 Target: {result.target}
 Type: {result.target_type}
 Timestamp: {result.timestamp}
 
 Key Findings:
-- Open Ports: {result.ports_open if result.ports_open else 'None detected'}
-- SSL Certificate: {'Valid' if result.ssl_certificate else 'Not found'}
-- DNS Records: {len(result.dns_records) if result.dns_records else 0} records
-- Threat Indicators: {'Found' if result.threat_intelligence else 'None'}{nmap_info}
+- Open Ports (Shodan): {result.ports_open if result.ports_open else 'None detected'}
+- GreyNoise Classification: {result.greynoise_data.get('classification', 'Unknown') if result.greynoise_data else 'No data'}
+- AbuseIPDB Score: {result.abuseipdb_data.get('abuseConfidenceScore', 'N/A') if result.abuseipdb_data else 'No data'}{nmap_info}
 
-For detailed analysis, see LLM analysis section.
+For detailed analysis, see full JSON/markdown output.
 """
         return summary
     
@@ -649,15 +344,12 @@ For detailed analysis, see LLM analysis section.
 {self.nmap_scanner.format_results(result.nmap_results)}
 """
         
-        md = f"""# OSINT Scan Report
+        md = f"""# IP Intelligence Scan Report
 
 ## Target Information
 - **Target:** {result.target}
 - **Type:** {result.target_type}
 - **Scan Date:** {result.timestamp}
-
-## IP Information
-{self._dict_to_md(result.ipinfo_data) if result.ipinfo_data else 'No data'}
 
 ## Shodan Results
 {self._dict_to_md(result.shodan_data) if result.shodan_data else 'No data'}
@@ -665,22 +357,13 @@ For detailed analysis, see LLM analysis section.
 ## Censys Results
 {self._dict_to_md(result.censys_data) if result.censys_data else 'No data'}
 
-## SSL Certificate
-{self._dict_to_md(result.ssl_certificate) if result.ssl_certificate else 'No data'}
+## GreyNoise Results
+{self._dict_to_md(result.greynoise_data) if result.greynoise_data else 'No data'}
 
-## DNS Records
-{self._dict_to_md(result.dns_records) if result.dns_records else 'No data'}
-
-## WHOIS Information
-{self._dict_to_md(result.whois_data) if result.whois_data else 'No data'}
-
-## Threat Intelligence
-{self._dict_to_md(result.threat_intelligence) if result.threat_intelligence else 'No data'}
+## AbuseIPDB Results
+{self._dict_to_md(result.abuseipdb_data) if result.abuseipdb_data else 'No data'}
 
 {nmap_section}
-
-## LLM Analysis
-{result.llm_analysis if result.llm_analysis else 'No analysis available'}
 
 ## Summary
 {result.summary}
@@ -708,10 +391,10 @@ For detailed analysis, see LLM analysis section.
 def display_menu() -> str:
     """Display main menu and get user choice"""
     print("\n" + "="*60)
-    print("OSIntLLM - Open Source Intelligence with LLM Analysis")
+    print("OSIntLLM - IP Intelligence Scanner with NMap")
     print("="*60)
-    print("\n1. Standard OSINT Scan")
-    print("2. OSINT Scan + NMap")
+    print("\n1. Standard IP Intelligence Scan")
+    print("2. IP Intelligence Scan + NMap")
     print("3. View NMap Profiles")
     print("4. View NMap Switches")
     print("5. Exit")
@@ -721,7 +404,7 @@ def display_menu() -> str:
 
 def main():
     """Main function"""
-    print("OSIntLLM - Open Source Intelligence with LLM Analysis")
+    print("OSIntLLM - IP Intelligence Scanner with NMap")
     print("=" * 60)
     
     # Validate configuration
@@ -761,12 +444,12 @@ def main():
         
         elif choice == "1" or choice == "2":
             # Get target
-            print("\nEnter targets to scan (one per line, empty line to finish):")
-            print("Examples: 8.8.8.8, google.com, https://example.com\n")
+            print("\nEnter IP addresses to scan (one per line, empty line to finish):")
+            print("Examples: 8.8.8.8, 1.1.1.1, 192.168.1.1\n")
             
             targets = []
             while True:
-                target = input("Target: ").strip()
+                target = input("IP Address: ").strip()
                 if not target:
                     break
                 targets.append(target)
@@ -799,7 +482,7 @@ def main():
                     custom_nmap_args = input("Enter custom NMap arguments: ").strip()
                 
                 if not osint_llm.nmap_scanner.nmap_available:
-                    print("Warning: NMap is not installed. Proceeding with standard OSINT scan only.")
+                    print("Warning: NMap is not installed. Proceeding with standard IP intelligence scan only.")
                     run_nmap = False
             
             # Scan targets
